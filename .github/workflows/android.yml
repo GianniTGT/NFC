@@ -12,9 +12,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -42,7 +42,13 @@ jobs:
         run: flutter pub get
 
       - name: APK bauen
-        run: flutter build apk --release --build-number=${{ github.run_number }}
+        run: |
+          set -o pipefail
+          if ! flutter build apk --release --build-number=${{ github.run_number }} 2>&1 | tee build.log; then
+            grep -nE "error|Error|What went wrong|FAILURE|Exception|requires|incompatible" -A3 build.log | head -80 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' > err.txt
+            echo "::error title=Build-Fehler::$(cat err.txt)"
+            exit 1
+          fi
 
       - name: APK umbenennen
         run: cp build/app/outputs/flutter-apk/app-release.apk NFC-Reader-${{ github.run_number }}.apk
