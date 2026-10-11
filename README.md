@@ -6,7 +6,9 @@ Android-App (Flutter) zum Lesen von NFC-Karten und -Tags.
 - Zeigt NDEF-Inhalte (Text, URL, sonstige Daten als Text oder Hex)
 - Serienmodus: mehrere Karten nacheinander lesen
 - Text auf beschreibbare Tags schreiben
-- UID kopieren, ganze Liste als CSV kopieren
+- Karten benennen (Mitarbeiter, Equipment, Sonstiges) mit Notiz, z. B. SAP-Equipment
+- Verlauf und Namen bleiben gespeichert
+- Verlauf und Kartenliste als CSV kopieren, Kartenliste per CSV importieren
 
 ## Build
 
