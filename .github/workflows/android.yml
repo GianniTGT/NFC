@@ -1,0 +1,61 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Android-Projekt erzeugen (falls nicht vorhanden)
+        run: |
+          if [ ! -d android ]; then
+            flutter create --platforms=android --org ch.tiff --project-name tiff_nfc_reader .
+            rm -rf test
+          fi
+
+      - name: NFC-Berechtigung und App-Name setzen
+        run: |
+          M=android/app/src/main/AndroidManifest.xml
+          grep -q 'android.permission.NFC' $M || sed -i 's|<application|<uses-permission android:name="android.permission.NFC" />\n    <uses-feature android:name="android.hardware.nfc" android:required="true" />\n    <application|' $M
+          sed -i 's|android:label="[^"]*"|android:label="NFC Reader"|' $M
+          cat $M | head -20
+
+      - name: Pakete laden
+        run: flutter pub get
+
+      - name: APK bauen
+        run: flutter build apk --release --build-number=${{ github.run_number }}
+
+      - name: APK umbenennen
+        run: cp build/app/outputs/flutter-apk/app-release.apk NFC-Reader-${{ github.run_number }}.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NFC-Reader-APK
+          path: NFC-Reader-${{ github.run_number }}.apk
+
+      - name: Release veröffentlichen
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: NFC Reader Build ${{ github.run_number }}
+          body: APK auf dem Android-Handy herunterladen und installieren.
+          files: NFC-Reader-${{ github.run_number }}.apk
