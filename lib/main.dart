@@ -7,8 +7,31 @@ import 'store.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Fehler sichtbar auf dem Bildschirm zeigen statt leerer Fläche.
+  ErrorWidget.builder = (details) => Material(
+        color: Colors.white,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: SingleChildScrollView(
+            child: SelectableText(
+              'Fehler:\n${details.exceptionAsString()}',
+              style: const TextStyle(color: Colors.red, fontSize: 13),
+            ),
+          ),
+        ),
+      );
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    debugPrint('FLUTTER ERROR: ${details.exceptionAsString()}');
+  };
+
   final store = Store();
-  await store.load();
+  try {
+    await store.load().timeout(const Duration(seconds: 5));
+  } catch (e) {
+    debugPrint('Store laden fehlgeschlagen: $e');
+  }
   runApp(NfcApp(store: store));
 }
 
