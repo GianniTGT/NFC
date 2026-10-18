@@ -2,147 +2,206 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Kategorien für benannte Karten.
-const kCategories = ['Mitarbeiter', 'Equipment', 'Sonstiges'];
+/// Abo-Typen. Frei erweiterbar, Studio wählt beim Anlegen.
+const kAboTypen = ['Monatsabo', 'Jahresabo', '10er-Karte', 'Probe', 'Tageskarte'];
 
-/// Name und Zuordnung einer bekannten Karte (UID).
-class CardLabel {
-  CardLabel({required this.uid, required this.name, this.category = 'Sonstiges', this.note = ''});
+/// Ein Mitglied, verknüpft mit einer Karten-UID und einer eindeutigen Mitglieds-ID.
+class Member {
+  Member({
+    required this.uid,
+    required this.memberId,
+    required this.name,
+    this.aboTyp = 'Monatsabo',
+    this.validUntil,
+    this.blocked = false,
+    this.note = '',
+    this.entries = 0,
+  });
 
-  final String uid;
+  final String uid; // Karten-UID (fest)
+  String memberId; // eindeutige, von uns vergebene ID, wird auf die Karte geschrieben
   String name;
-  String category;
-  String note; // z. B. SAP-Equipment-Nr., Personalnummer, Standort
+  String aboTyp;
+  DateTime? validUntil; // null = unbefristet
+  bool blocked;
+  String note; // z. B. Telefon, Bemerkung
+  int entries; // Anzahl verbleibender Eintritte (nur für 10er-Karte); -1 = unbegrenzt
 
-  Map<String, dynamic> toJson() => {'uid': uid, 'name': name, 'category': category, 'note': note};
+  bool get expired => validUntil != null && validUntil!.isBefore(DateTime.now());
+  bool get noEntriesLeft => aboTyp == '10er-Karte' && entries <= 0;
 
-  factory CardLabel.fromJson(Map<String, dynamic> j) => CardLabel(
+  /// true = darf rein.
+  bool get valid => !blocked && !expired && !noEntriesLeft;
+
+  String get statusText {
+    if (blocked) return 'Gesperrt';
+    if (expired) return 'Abgelaufen';
+    if (noEntriesLeft) return 'Keine Eintritte mehr';
+    return 'Aktiv';
+  }
+
+  Map<String, dynamic> toJson() => {
+        'uid': uid,
+        'mid': memberId,
+        'name': name,
+        'abo': aboTyp,
+        'until': validUntil?.toIso8601String(),
+        'blocked': blocked,
+        'note': note,
+        'entries': entries,
+      };
+
+  factory Member.fromJson(Map<String, dynamic> j) => Member(
         uid: j['uid'] as String,
+        memberId: j['mid'] as String? ?? '',
         name: j['name'] as String? ?? '',
-        category: j['category'] as String? ?? 'Sonstiges',
+        aboTyp: j['abo'] as String? ?? 'Monatsabo',
+        validUntil: (j['until'] as String?) != null ? DateTime.tryParse(j['until'] as String) : null,
+        blocked: j['blocked'] as bool? ?? false,
         note: j['note'] as String? ?? '',
+        entries: j['entries'] as int? ?? -1,
       );
 }
 
-class RecordInfo {
-  RecordInfo(this.label, this.value);
-  final String label;
-  final String value;
-
-  Map<String, dynamic> toJson() => {'l': label, 'v': value};
-  factory RecordInfo.fromJson(Map<String, dynamic> j) => RecordInfo(j['l'] as String, j['v'] as String);
-}
-
-/// Ein einzelner Lesevorgang.
-class ScanResult {
-  ScanResult({
+/// Ein Check-in (Eintritt) im Protokoll.
+class CheckinEvent {
+  CheckinEvent({
     required this.time,
     required this.uid,
-    required this.type,
-    required this.details,
-    required this.records,
+    required this.memberId,
+    required this.name,
+    required this.granted,
+    required this.reason,
   });
 
   final DateTime time;
   final String uid;
-  final String type;
-  final Map<String, String> details;
-  final List<RecordInfo> records;
+  final String memberId;
+  final String name;
+  final bool granted;
+  final String reason; // z. B. "Aktiv", "Abgelaufen", "Unbekannte Karte"
 
   Map<String, dynamic> toJson() => {
         't': time.toIso8601String(),
         'uid': uid,
-        'type': type,
-        'd': details,
-        'r': records.map((e) => e.toJson()).toList(),
+        'mid': memberId,
+        'name': name,
+        'ok': granted,
+        'r': reason,
       };
 
-  factory ScanResult.fromJson(Map<String, dynamic> j) => ScanResult(
+  factory CheckinEvent.fromJson(Map<String, dynamic> j) => CheckinEvent(
         time: DateTime.parse(j['t'] as String),
-        uid: j['uid'] as String,
-        type: j['type'] as String,
-        details: Map<String, String>.from(j['d'] as Map),
-        records: (j['r'] as List).map((e) => RecordInfo.fromJson(Map<String, dynamic>.from(e as Map))).toList(),
+        uid: j['uid'] as String? ?? '',
+        memberId: j['mid'] as String? ?? '',
+        name: j['name'] as String? ?? '',
+        granted: j['ok'] as bool? ?? false,
+        reason: j['r'] as String? ?? '',
       );
 }
 
-/// Speichert Verlauf und Kartennamen lokal auf dem Handy.
+/// Speichert Mitglieder, Check-in-Protokoll und Einstellungen lokal auf dem Handy.
 class Store {
-  static const _kHistory = 'history_v1';
-  static const _kLabels = 'labels_v1';
-  static const maxHistory = 1000;
+  static const _kMembers = 'members_v1';
+  static const _kCheckins = 'checkins_v1';
+  static const _kCounter = 'id_counter_v1';
+  static const _kPrefix = 'id_prefix_v1';
+  static const maxCheckins = 2000;
 
-  final List<ScanResult> history = [];
-  final Map<String, CardLabel> labels = {};
+  final Map<String, Member> members = {}; // key = uid
+  final List<CheckinEvent> checkins = [];
+  int _counter = 0;
+  String idPrefix = 'M';
   SharedPreferences? _prefs;
 
   Future<void> load() async {
     _prefs = await SharedPreferences.getInstance();
     try {
-      final h = _prefs!.getString(_kHistory);
-      if (h != null) {
-        history
-          ..clear()
-          ..addAll((jsonDecode(h) as List).map((e) => ScanResult.fromJson(Map<String, dynamic>.from(e as Map))));
-      }
-      final l = _prefs!.getString(_kLabels);
-      if (l != null) {
-        labels.clear();
-        for (final e in jsonDecode(l) as List) {
-          final c = CardLabel.fromJson(Map<String, dynamic>.from(e as Map));
-          labels[c.uid] = c;
+      final m = _prefs!.getString(_kMembers);
+      if (m != null) {
+        members.clear();
+        for (final e in jsonDecode(m) as List) {
+          final c = Member.fromJson(Map<String, dynamic>.from(e as Map));
+          members[c.uid] = c;
         }
       }
+      final ch = _prefs!.getString(_kCheckins);
+      if (ch != null) {
+        checkins
+          ..clear()
+          ..addAll((jsonDecode(ch) as List).map((e) => CheckinEvent.fromJson(Map<String, dynamic>.from(e as Map))));
+      }
+      _counter = _prefs!.getInt(_kCounter) ?? 0;
+      idPrefix = _prefs!.getString(_kPrefix) ?? 'M';
     } catch (_) {
       // Defekte Daten ignorieren, App startet trotzdem.
     }
   }
 
-  Future<void> addScan(ScanResult r) async {
-    history.insert(0, r);
-    if (history.length > maxHistory) history.removeRange(maxHistory, history.length);
-    await _saveHistory();
+  /// Nächste eindeutige Mitglieds-ID, z. B. "AKA-00042".
+  String nextMemberId() {
+    _counter++;
+    _prefs?.setInt(_kCounter, _counter);
+    return '$idPrefix-${_counter.toString().padLeft(5, '0')}';
   }
 
-  Future<void> clearHistory() async {
-    history.clear();
-    await _saveHistory();
+  Future<void> setPrefix(String p) async {
+    idPrefix = p.trim().isEmpty ? 'M' : p.trim().toUpperCase();
+    await _prefs?.setString(_kPrefix, idPrefix);
   }
 
-  Future<void> setLabel(CardLabel c) async {
-    labels[c.uid] = c;
-    await _saveLabels();
-  }
+  Member? byUid(String uid) => members[uid];
 
-  Future<void> removeLabel(String uid) async {
-    labels.remove(uid);
-    await _saveLabels();
-  }
-
-  /// Importiert Zeilen im Format UID;Name;Kategorie;Notiz. Gibt die Anzahl zurück.
-  Future<int> importCsv(String text) async {
-    var n = 0;
-    for (final raw in const LineSplitter().convert(text)) {
-      final p = raw.split(';');
-      if (p.length < 2) continue;
-      final uid = p[0].trim().toUpperCase();
-      if (uid.isEmpty || uid == 'UID') continue;
-      final cat = p.length > 2 && kCategories.contains(p[2].trim()) ? p[2].trim() : 'Sonstiges';
-      labels[uid] = CardLabel(uid: uid, name: p[1].trim(), category: cat, note: p.length > 3 ? p[3].trim() : '');
-      n++;
+  Member? byMemberId(String mid) {
+    for (final m in members.values) {
+      if (m.memberId == mid) return m;
     }
-    await _saveLabels();
-    return n;
+    return null;
   }
 
-  String labelsCsv() {
-    final rows = labels.values.toList()..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
-    return 'UID;Name;Kategorie;Notiz\n${rows.map((c) => '${c.uid};${c.name};${c.category};${c.note}').join('\n')}';
+  Future<void> saveMember(Member m) async {
+    members[m.uid] = m;
+    await _saveMembers();
   }
 
-  Future<void> _saveHistory() async =>
-      _prefs?.setString(_kHistory, jsonEncode(history.map((e) => e.toJson()).toList()));
+  Future<void> removeMember(String uid) async {
+    members.remove(uid);
+    await _saveMembers();
+  }
 
-  Future<void> _saveLabels() async =>
-      _prefs?.setString(_kLabels, jsonEncode(labels.values.map((e) => e.toJson()).toList()));
+  Future<void> addCheckin(CheckinEvent e) async {
+    checkins.insert(0, e);
+    if (checkins.length > maxCheckins) checkins.removeRange(maxCheckins, checkins.length);
+    await _prefs?.setString(_kCheckins, jsonEncode(checkins.map((x) => x.toJson()).toList()));
+  }
+
+  Future<void> clearCheckins() async {
+    checkins.clear();
+    await _prefs?.setString(_kCheckins, jsonEncode([]));
+  }
+
+  String membersCsv() {
+    final rows = members.values.toList()..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    final b = StringBuffer('MitgliedsID;Name;Abo;GueltigBis;Status;UID;Notiz\n');
+    for (final m in rows) {
+      b.writeln('${m.memberId};${m.name};${m.aboTyp};${m.validUntil != null ? _d(m.validUntil!) : ''};${m.statusText};${m.uid};${m.note}');
+    }
+    return b.toString();
+  }
+
+  String checkinsCsv() {
+    final b = StringBuffer('Zeit;Status;Name;MitgliedsID;UID;Grund\n');
+    for (final e in checkins.reversed) {
+      b.writeln('${_dt(e.time)};${e.granted ? "OK" : "ABGEWIESEN"};${e.name};${e.memberId};${e.uid};${e.reason}');
+    }
+    return b.toString();
+  }
+
+  static String _d(DateTime t) =>
+      '${t.day.toString().padLeft(2, '0')}.${t.month.toString().padLeft(2, '0')}.${t.year}';
+  static String _dt(DateTime t) =>
+      '${_d(t)} ${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+
+  Future<void> _saveMembers() async =>
+      _prefs?.setString(_kMembers, jsonEncode(members.values.map((e) => e.toJson()).toList()));
 }

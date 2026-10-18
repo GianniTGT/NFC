@@ -35,7 +35,7 @@ jobs:
         run: |
           M=android/app/src/main/AndroidManifest.xml
           grep -q 'android.permission.NFC' $M || sed -i 's|<application|<uses-permission android:name="android.permission.NFC" />\n    <uses-feature android:name="android.hardware.nfc" android:required="true" />\n    <application|' $M
-          sed -i 's|android:label="[^"]*"|android:label="NFC Reader"|' $M
+          sed -i 's|android:label="[^"]*"|android:label="Tiff Access"|' $M
           G=$(ls android/app/build.gradle.kts android/app/build.gradle 2>/dev/null | head -1)
           sed -i -E 's/minSdk( =|Version)? *=? *flutter\.minSdkVersion/minSdk = 26/' $G
           grep -n "minSdk" $G
@@ -53,17 +53,17 @@ jobs:
           fi
 
       - name: APK umbenennen
-        run: cp build/app/outputs/flutter-apk/app-release.apk NFC-Reader-${{ github.run_number }}.apk
+        run: cp build/app/outputs/flutter-apk/app-release.apk Tiff-Access-${{ github.run_number }}.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NFC-Reader-APK
-          path: NFC-Reader-${{ github.run_number }}.apk
+          name: Tiff-Access-APK
+          path: Tiff-Access-${{ github.run_number }}.apk
 
       - name: Release veröffentlichen
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: NFC Reader Build ${{ github.run_number }}
+          name: Tiff Access Build ${{ github.run_number }}
           body: APK auf dem Android-Handy herunterladen und installieren.
-          files: NFC-Reader-${{ github.run_number }}.apk
+          files: Tiff-Access-${{ github.run_number }}.apk
